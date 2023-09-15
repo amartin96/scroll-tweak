@@ -10,8 +10,8 @@
 import AppKit
 import Foundation
 
-enum EventLoop {
-    case Valid(thread: EventThread)
+enum EventManager {
+    case Valid(_ thread: EventThread)
     case Invalid
     
     init() {
@@ -31,31 +31,42 @@ enum EventLoop {
             },
             userInfo: nil
         ) else {
+            print("Failed to create event tap")
             self = .Invalid
             return
         }
         
-        self = .Valid(thread: EventThread(eventTap))
+        self = .Valid(EventThread(eventTap))
     }
 }
 
 struct EventThread {
-    private var thread: Thread
+    var thread: Thread
+    private let eventTap: CFMachPort
     private let eventSource: CFRunLoopSource
     private let messagePort: CFMessagePort
     private let messageSource: CFRunLoopSource
     
     private static func startNewThread(_ eventSource: CFRunLoopSource, _ messageSource: CFRunLoopSource) -> Thread {
+        print("Creating thread")
         let thread = Thread {
+            print("Run loop thread started: \(Thread.current.name)")
             CFRunLoopAddSource(CFRunLoopGetCurrent(), eventSource, .commonModes)
             CFRunLoopAddSource(CFRunLoopGetCurrent(), messageSource, .commonModes)
             CFRunLoopRun()
+            print("Run loop thread exiting")
         }
+        thread.name = UUID().uuidString
+        print("Starting thread")
         thread.start()
+        print("thread.start() called, isExecuting: \(thread.isExecuting)")
         return thread
     }
     
     init(_ eventTap: CFMachPort) {
+        // Keep the handle to the event tap so we can release it later
+        self.eventTap = eventTap
+        
         // Create a runloop source from the tap
         eventSource = CFMachPortCreateRunLoopSource(kCFAllocatorDefault, eventTap, 0)
         
@@ -64,11 +75,8 @@ struct EventThread {
             kCFAllocatorDefault,
             "" as CFString,
             { _, _, _, _ in
-                print("Exiting thread")
-                Thread.exit()
-            
-                print("This shouldn't happen")
-                // This makes static analysis happy
+                print("Stopping run loop")
+                CFRunLoopStop(CFRunLoopGetCurrent())
                 return nil
             },
             nil,
@@ -76,35 +84,38 @@ struct EventThread {
         )
         messageSource = CFMessagePortCreateRunLoopSource(kCFAllocatorDefault, messagePort, 0)
         thread = EventThread.startNewThread(eventSource, messageSource)
+        print("EventThread.startNewThread called, isExecuting: \(thread.isExecuting)")
     }
 
     mutating func toggle() {
-        print("Thread is currently executing: \(thread.isExecuting)")
         if thread.isExecuting {
-            print("Stopping the event loop")
+            print("Toggling off")
             if CFMessagePortSendRequest(messagePort, 0, nil, 30, 0, nil, nil) != kCFMessagePortSuccess {
                 // TODO failed to send message
                 print("Failed to send message")
             }
         } else {
-            print("Starting the event loop")
+            print("Toggling on")
+            let oldThread = thread
             thread = EventThread.startNewThread(eventSource, messageSource)
+            print("oldThread === thread: \(oldThread === thread)")
         }
     }
 }
 
 class App: NSObject, NSApplicationDelegate {
-    var loop: EventLoop!
+    var loop: EventManager!
     var statusItem: NSStatusItem!
     
     func applicationDidFinishLaunching(_ notification: Notification) {
-        loop = EventLoop()
+        loop = EventManager()
 
         NSApp.setActivationPolicy(.regular)
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
         statusItem.button!.title = "+"
         let menu = NSMenu()
         menu.addItem(withTitle: "Stop", action: #selector(toggle), keyEquivalent: "")
+        menu.addItem(withTitle: "Status", action: #selector(status), keyEquivalent: "")
         menu.addItem(withTitle: "Quit", action: #selector(terminate), keyEquivalent: "")
         statusItem.menu = menu
     }
@@ -112,6 +123,16 @@ class App: NSObject, NSApplicationDelegate {
     @objc private func toggle() {
         if case .Valid(var thread) = loop {
             thread.toggle()
+        } else {
+            print("EventManager is invalid")
+        }
+    }
+    
+    @objc private func status() {
+        if case .Valid(let thread) = loop {
+            print("thread \(thread.thread.name) isExecuting: \(thread.thread.isExecuting)")
+        } else {
+            print("EventManager is invalid")
         }
     }
 

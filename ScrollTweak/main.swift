@@ -3,8 +3,6 @@ import AppKit
 // Must extend NSObject so selectors can be used
 class EventListener: NSObject {
     let thread: Thread
-    let eventTap: CFMachPort
-    let eventSource: CFRunLoopSource
     var runloop: CFRunLoop!
 
     // Need this dummy parameter because NSObject.init() can't be overridden by init?()
@@ -28,7 +26,6 @@ class EventListener: NSObject {
             print("Failed to create scroll wheel event tap")
             return nil
         }
-        self.eventTap = eventTap
 
         // Create a run loop source from the event tap
         guard let eventSource = CFMachPortCreateRunLoopSource(kCFAllocatorDefault, eventTap, 0)
@@ -36,7 +33,6 @@ class EventListener: NSObject {
             print("Failed to create scroll wheel run loop source")
             return nil
         }
-        self.eventSource = eventSource
 
         thread = Thread {
             CFRunLoopAddSource(CFRunLoopGetCurrent(), eventSource, .commonModes)
@@ -72,10 +68,10 @@ class App: NSObject, NSApplicationDelegate {
     @objc private func toggle() {
         if eventListener != nil {
             eventListener = nil
-            statusItem.menu!.item(withTitle: "Stop")?.title = "Start"
+            statusItem.menu!.item(withTitle: "Stop")!.title = "Start"
         } else {
             eventListener = EventListener(())
-            statusItem.menu!.item(withTitle: "Start")?.title = "Stop"
+            statusItem.menu!.item(withTitle: "Start")!.title = "Stop"
         }
     }
 

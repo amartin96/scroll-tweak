@@ -1,20 +1,14 @@
-// Each thread comes with its own runloop
-// Start a new thread for the scroll event tap runloop
-// Give it a message port too so we can tell it to shut down
-// Use the main thread for the application
-
-// TODO
-// - Can only stop the thread once. Subsequent attempts keep starting more threads without stopping the old ones.
-// - Restarting the thread doesn't capture scroll events properly?
-
 import AppKit
-import Foundation
 
-enum EventManager {
-    case Valid(_ thread: EventThread)
-    case Invalid
-    
-    init() {
+class EventListener {
+    let thread: Thread
+    let eventTap: CFMachPort
+    let eventSource: CFRunLoopSource
+    let messagePort: CFMessagePort
+    let messageSource: CFRunLoopSource
+    var runloop: CFRunLoop!
+
+    init?() {
         // Create the scroll wheel event tap
         guard let eventTap = CGEvent.tapCreate(
             tap: .cgSessionEventTap,
@@ -31,47 +25,21 @@ enum EventManager {
             },
             userInfo: nil
         ) else {
-            print("Failed to create event tap")
-            self = .Invalid
-            return
+            print("Failed to create scroll wheel event tap")
+            return nil
         }
-        
-        self = .Valid(EventThread(eventTap))
-    }
-}
-
-struct EventThread {
-    var thread: Thread
-    private let eventTap: CFMachPort
-    private let eventSource: CFRunLoopSource
-    private let messagePort: CFMessagePort
-    private let messageSource: CFRunLoopSource
-    
-    private static func startNewThread(_ eventSource: CFRunLoopSource, _ messageSource: CFRunLoopSource) -> Thread {
-        print("Creating thread")
-        let thread = Thread {
-            print("Run loop thread started: \(Thread.current.name)")
-            CFRunLoopAddSource(CFRunLoopGetCurrent(), eventSource, .commonModes)
-            CFRunLoopAddSource(CFRunLoopGetCurrent(), messageSource, .commonModes)
-            CFRunLoopRun()
-            print("Run loop thread exiting")
-        }
-        thread.name = UUID().uuidString
-        print("Starting thread")
-        thread.start()
-        print("thread.start() called, isExecuting: \(thread.isExecuting)")
-        return thread
-    }
-    
-    init(_ eventTap: CFMachPort) {
-        // Keep the handle to the event tap so we can release it later
         self.eventTap = eventTap
-        
-        // Create a runloop source from the tap
-        eventSource = CFMachPortCreateRunLoopSource(kCFAllocatorDefault, eventTap, 0)
-        
-        // Create a message port so we can stop the thread
-        messagePort = CFMessagePortCreateLocal(
+
+        // Create a run loop source from the event tap
+        guard let eventSource = CFMachPortCreateRunLoopSource(kCFAllocatorDefault, eventTap, 0)
+        else {
+            print("Failed to create scroll wheel run loop source")
+            return nil
+        }
+        self.eventSource = eventSource
+
+        // Create a message port so we can send a stop command to the thread
+        guard let messagePort = CFMessagePortCreateLocal(
             kCFAllocatorDefault,
             "" as CFString,
             { _, _, _, _ in
@@ -81,63 +49,69 @@ struct EventThread {
             },
             nil,
             nil
-        )
-        messageSource = CFMessagePortCreateRunLoopSource(kCFAllocatorDefault, messagePort, 0)
-        thread = EventThread.startNewThread(eventSource, messageSource)
-        print("EventThread.startNewThread called, isExecuting: \(thread.isExecuting)")
+        ) else {
+            print("Failed to create message port")
+            return nil
+        }
+        self.messagePort = messagePort
+
+        guard let messageSource = CFMessagePortCreateRunLoopSource(kCFAllocatorDefault, messagePort, 0)
+        else {
+            print("Failed to create message run loop source")
+            return nil
+        }
+        self.messageSource = messageSource
+
+        thread = Thread {
+            print("Run loop thread started: \(Thread.current.name)")
+            CFRunLoopAddSource(CFRunLoopGetCurrent(), eventSource, .commonModes)
+            CFRunLoopAddSource(CFRunLoopGetCurrent(), messageSource, .commonModes)
+            CFRunLoopRun()
+            print("Run loop stopped, terminating thread")
+        }
+        thread.name = UUID().uuidString
+        thread.start()
+        print("thread.start() called, isExecuting: \(thread.isExecuting)")
     }
 
-    mutating func toggle() {
-        if thread.isExecuting {
-            print("Toggling off")
-            if CFMessagePortSendRequest(messagePort, 0, nil, 30, 0, nil, nil) != kCFMessagePortSuccess {
-                // TODO failed to send message
-                print("Failed to send message")
-            }
-        } else {
-            print("Toggling on")
-            let oldThread = thread
-            thread = EventThread.startNewThread(eventSource, messageSource)
-            print("oldThread === thread: \(oldThread === thread)")
+    deinit {
+        print("deinit")
+        if CFMessagePortSendRequest(messagePort, 0, nil, 30, 0, nil, nil) != kCFMessagePortSuccess {
+            // TODO failed to send message
+            print("Failed to send message")
         }
     }
 }
 
 class App: NSObject, NSApplicationDelegate {
-    var loop: EventManager!
+    var eventListener: EventListener?
     var statusItem: NSStatusItem!
-    
-    func applicationDidFinishLaunching(_ notification: Notification) {
-        loop = EventManager()
 
-        NSApp.setActivationPolicy(.regular)
+    override init() {
+        print("init")
+        super.init()
+    }
+
+    func applicationDidFinishLaunching(_ notification: Notification) {
+        // NSApp.setActivationPolicy(.regular)
+        eventListener = EventListener()
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
         statusItem.button!.title = "+"
         let menu = NSMenu()
-        menu.addItem(withTitle: "Stop", action: #selector(toggle), keyEquivalent: "")
-        menu.addItem(withTitle: "Status", action: #selector(status), keyEquivalent: "")
-        menu.addItem(withTitle: "Quit", action: #selector(terminate), keyEquivalent: "")
+        menu.addItem(withTitle: "Toggle", action: #selector(toggle), keyEquivalent: "")
+        // menu.addItem(withTitle: "Status", action: #selector(status), keyEquivalent: "")
+        // menu.addItem(withTitle: "Quit", action: #selector(terminate), keyEquivalent: "")
         statusItem.menu = menu
     }
-    
-    @objc private func toggle() {
-        if case .Valid(var thread) = loop {
-            thread.toggle()
-        } else {
-            print("EventManager is invalid")
-        }
-    }
-    
-    @objc private func status() {
-        if case .Valid(let thread) = loop {
-            print("thread \(thread.thread.name) isExecuting: \(thread.thread.isExecuting)")
-        } else {
-            print("EventManager is invalid")
-        }
-    }
 
-    @objc private func terminate() {
-        NSApp.terminate(self)
+    @objc private func toggle() {
+        if eventListener != nil {
+            print("Stopping")
+            eventListener = nil
+        } else {
+            print("Starting")
+            eventListener = EventListener()
+        }
     }
 }
 

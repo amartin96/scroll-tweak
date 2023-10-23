@@ -82,7 +82,6 @@ struct MyView: View {
     var body: some View {
         List {
             Toggle("ScrollTweak", isOn: $isOn).toggleStyle(.switch)
-            Divider()
             HStack {
                 Text("# Lines")
                 Slider(value: $lines, in: 1...10, step: 1).disabled(isOn)
@@ -95,7 +94,7 @@ struct MyView: View {
             appDelegate.toggle(lines: Int64(lines))
         }.onChange(of: lines) {
             print("lines=\(lines)")
-        }
+        }.listStyle(.sidebar)
     }
 }
 
